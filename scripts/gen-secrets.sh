@@ -22,12 +22,14 @@ if [ ! -s secrets/lab-ca.key ]; then
     -keyout secrets/lab-ca.key -out secrets/lab-ca.crt 2>/dev/null
 fi
 
-# The directory stays 0700 (root only on the host). The files are world-readable
-# so that containers running as non-root users (postgres, grafana) can read them:
-# Compose bind-mounts file secrets with their host permissions.
+# The directory stays 0700, so on the host only its owner can open anything inside.
+# The files themselves are world-readable because Compose bind-mounts them with
+# their host permissions and the containers run as other users (postgres, grafana).
+# That includes the lab CA key: Caddy runs with every capability dropped, so even
+# as uid 0 it cannot read a 0400 file owned by another user (the CI runner is uid
+# 1001). On a real host the key would be owned by a dedicated caddy user instead.
 chmod 0700 secrets
 chmod 0444 secrets/*
-chmod 0400 secrets/lab-ca.key   # read only by Caddy (runs as uid 0, the file owner)
 
 if [ ! -s .env ]; then
   cat > .env <<ENV
