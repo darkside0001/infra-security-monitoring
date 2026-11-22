@@ -1,0 +1,42 @@
+# Log-based detections. "fake" is Loki's tenant name when auth is disabled.
+groups:
+  - name: crm-auth
+    interval: 30s
+    rules:
+      - alert: CRMLoginBruteForce
+        # MITRE ATT&CK T1110 (Brute Force). Counts failed or throttled logins per
+        # client IP, as seen by the proxy (the client IP cannot be spoofed there).
+        expr: |
+          sum by (client_ip) (
+            count_over_time(
+              {service="caddy"}
+                | json client_ip="request.client_ip", uri="request.uri", status="status"
+                | uri = "/api/v1/auth/login"
+                | status =~ "401|423|429"
+              [5m]
+            )
+          ) > 10
+        labels:
+          severity: high
+          mitre: T1110
+        annotations:
+          summary: "{{ $labels.client_ip }} failed to log in to the CRM more than 10 times in 5 minutes"
+          runbook: docs/runbook.md#crmloginbruteforce
+
+      - alert: SensitivePathProbing
+        # T1595.003 (Wordlist Scanning): many 404s on paths like /.env, /.git, /wp-admin.
+        expr: |
+          sum by (client_ip) (
+            count_over_time(
+              {service="caddy"}
+                | json client_ip="request.client_ip", uri="request.uri", status="status"
+                | uri =~ "/(\\.env|\\.git|wp-admin|wp-login\\.php|phpmyadmin|actuator|server-status|\\.aws).*"
+              [5m]
+            )
+          ) > 5
+        labels:
+          severity: medium
+          mitre: T1595.003
+        annotations:
+          summary: "{{ $labels.client_ip }} is probing for sensitive files"
+          runbook: docs/runbook.md#sensitivepathprobing

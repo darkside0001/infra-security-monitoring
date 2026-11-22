@@ -1,0 +1,97 @@
+groups:
+  - name: availability
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up == 0
+        for: 1m
+        labels: { severity: high }
+        annotations:
+          summary: "{{ $labels.job }} on {{ $labels.instance }} is not reporting metrics"
+          runbook: docs/runbook.md#scrapetargetdown
+
+      - alert: EndpointDown
+        expr: probe_success == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Black-box probe failed for {{ $labels.instance }} (down, bad TLS or missing security header)"
+          runbook: docs/runbook.md#endpointdown
+
+      - alert: High5xxRate
+        expr: |
+          sum by (host) (rate(caddy_http_request_duration_seconds_count{code=~"5.."}[5m]))
+            / sum by (host) (rate(caddy_http_request_duration_seconds_count[5m])) > 0.05
+        for: 5m
+        labels: { severity: high }
+        annotations:
+          summary: "More than 5% of requests to {{ $labels.host }} fail with 5xx"
+          runbook: docs/runbook.md#high5xxrate
+
+  - name: tls
+    rules:
+      # Lab certificates come from Caddy's internal CA and live 12h (renewed at
+      # ~4h left), so less than 1h left means renewal is broken.
+      # With Let's Encrypt (90 days, renewed at 30) use 14 * 86400.
+      - alert: TLSCertificateExpiringSoon
+        expr: probe_ssl_earliest_cert_expiry - time() < 3600
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}"
+          runbook: docs/runbook.md#tlscertificateexpiringsoon
+
+  - name: security
+    rules:
+      - alert: UnexpectedAuthFailures
+        # 401/403/429 at the proxy across all hosts. The per-IP brute-force alert
+        # lives in Loki (loki/rules/fake/rules.yml), where the client IP is known.
+        expr: sum(rate(caddy_http_request_duration_seconds_count{code=~"401|403|429"}[5m])) > 1
+        for: 2m
+        labels: { severity: medium }
+        annotations:
+          summary: "Sustained auth failures at the proxy ({{ $value | printf \"%.1f\" }}/s)"
+          runbook: docs/runbook.md#unexpectedauthfailures
+
+  - name: backup
+    rules:
+      - alert: BackupMissing
+        expr: absent(backup_last_success_timestamp_seconds)
+        for: 30m
+        labels: { severity: high }
+        annotations:
+          summary: "No successful backup has ever been recorded"
+          runbook: docs/runbook.md#backupmissing
+
+      - alert: BackupTooOld
+        expr: time() - backup_last_success_timestamp_seconds > 26 * 3600
+        for: 10m
+        labels: { severity: high }
+        annotations:
+          summary: "Last successful backup was {{ $value | humanizeDuration }} ago"
+          runbook: docs/runbook.md#backuptooold
+
+      - alert: RestoreTestFailed
+        expr: backup_restore_test_success == 0
+        labels: { severity: critical }
+        annotations:
+          summary: "The last restore test failed: backups may not be usable"
+          runbook: docs/runbook.md#restoretestfailed
+
+  - name: host
+    rules:
+      - alert: HostDiskAlmostFull
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.10
+        for: 10m
+        labels: { severity: high }
+        annotations:
+          summary: "Less than 10% disk left on {{ $labels.mountpoint }}"
+          runbook: docs/runbook.md#hostdiskalmostfull
+
+      - alert: HostMemoryPressure
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels: { severity: medium }
+        annotations:
+          summary: "Less than 10% memory available"
+          runbook: docs/runbook.md#hostmemorypressure

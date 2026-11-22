@@ -1,0 +1,28 @@
+route:
+  receiver: lab-sink
+  group_by: [alertname, instance]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical"]
+      receiver: lab-sink
+      repeat_interval: 1h
+
+receivers:
+  - name: lab-sink
+    webhook_configs:
+      - url: http://alert-sink:8080/alert
+        send_resolved: true
+  # Production: Telegram. Put the bot token in a file mounted read-only.
+  # - name: telegram
+  #   telegram_configs:
+  #     - bot_token_file: /etc/alertmanager/telegram_token
+  #       chat_id: -1001234567890
+  #       send_resolved: true
+
+inhibit_rules:
+  # If the whole endpoint is down, do not also page for its 5xx rate.
+  - source_matchers: [alertname="EndpointDown"]
+    target_matchers: [alertname="High5xxRate"]
+    equal: [instance]

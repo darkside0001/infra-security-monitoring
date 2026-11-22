@@ -1,0 +1,321 @@
+# infra-security-monitoring: a hardened single-host web stack with monitoring,
+# centralized logging, alerting and tested backups.
+#
+#   ./scripts/gen-secrets.sh   # once: creates .env and secrets/ (git-ignored)
+#   docker compose up -d --build
+#   ./scripts/verify.sh        # end-to-end security checks, writes a report
+#
+# Network layout (see docs/architecture.md):
+#   edge     172.28.10.0/24  the only network with published ports (80, 443 on Caddy)
+#   app      172.28.20.0/24  internal: Caddy -> crm-api
+#   db       172.28.30.0/24  internal: crm-api, backup -> PostgreSQL
+#   mon      172.28.40.0/24  internal: Prometheus, Alertmanager, Loki, Grafana, exporters
+#   dockerapi 172.28.50.0/24 internal: Alloy -> read-only Docker socket proxy
+name: ism
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  # ---------------------------------------------------------------- edge
+  caddy:
+    <<: *hardening
+    image: caddy:2.10
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./secrets/lab-ca.crt:/etc/caddy/lab-ca/root.crt:ro
+      - ./secrets/lab-ca.key:/etc/caddy/lab-ca/root.key:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    tmpfs: [/tmp]
+    mem_limit: 256m
+    pids_limit: 200
+    networks:
+      edge: { ipv4_address: 172.28.10.10 }
+      app: {}
+      mon:
+        ipv4_address: 172.28.40.10
+        aliases: [crm.lab.test, grafana.lab.test]
+    depends_on:
+      crm-api: { condition: service_healthy }
+
+  # ---------------------------------------------------------------- application
+  crm-seed:
+    image: ism/crm-demo:1af801e
+    build:
+      context: https://github.com/darkside0001/crm-demo.git#1af801e3ebb299b1408338155d1f1174b092ffa4
+    env_file: .env
+    environment:
+      CRM_DATABASE_URL: postgresql+psycopg://crm:${POSTGRES_PASSWORD:?run scripts/gen-secrets.sh}@db:5432/crm
+    command: ["python", "-m", "scripts.seed"]
+    restart: "no"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    networks: [db]
+    depends_on:
+      db: { condition: service_healthy }
+
+  crm-api:
+    <<: *hardening
+    image: ism/crm-demo:1af801e
+    env_file: .env
+    environment:
+      CRM_DATABASE_URL: postgresql+psycopg://crm:${POSTGRES_PASSWORD}@db:5432/crm
+      CRM_ENV: production
+      CRM_TRUST_PROXY: "true"      # Caddy overwrites X-Forwarded-For, see caddy/Caddyfile
+      CRM_ENABLE_HSTS: "false"     # HSTS is set once, at the proxy
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 384m
+    pids_limit: 200
+    networks: [app, db]
+    depends_on:
+      crm-seed: { condition: service_completed_successfully }
+
+  db:
+    <<: *hardening
+    image: postgres:17-alpine
+    # The entrypoint needs to chown the data dir and drop to the postgres user.
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_DB: crm
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    secrets: [postgres_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 5s
+      retries: 20
+    mem_limit: 512m
+    pids_limit: 300
+    networks: [db]
+
+  # ---------------------------------------------------------------- backup
+  backup:
+    <<: *hardening
+    build: ./backup
+    image: ism/backup:local
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      PGHOST: db
+      PGUSER: crm
+      PGDATABASE: crm
+      RESTIC_REPOSITORY: /backup-repo
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      RESTIC_CACHE_DIR: /tmp/restic-cache
+      BACKUP_INTERVAL_SECONDS: "86400"
+    secrets: [postgres_password, restic_password]
+    volumes:
+      - backup_repo:/backup-repo
+      - textfile:/textfile
+    mem_limit: 256m
+    networks: [db]
+    depends_on:
+      crm-api: { condition: service_healthy }
+
+  # ---------------------------------------------------------------- monitoring
+  prometheus:
+    <<: *hardening
+    image: prom/prometheus:v3.5.0
+    user: "65534:65534"
+    read_only: true
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    mem_limit: 512m
+    networks: [mon]
+
+  alertmanager:
+    <<: *hardening
+    image: prom/alertmanager:v0.28.1
+    user: "65534:65534"
+    read_only: true
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+    mem_limit: 128m
+    networks: [mon]
+
+  blackbox:
+    <<: *hardening
+    image: prom/blackbox-exporter:v0.27.0
+    user: "65534:65534"
+    read_only: true
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./blackbox:/etc/blackbox:ro
+      # Public lab CA certificate only, so probes validate the chain like a real client.
+      - ./secrets/lab-ca.crt:/etc/ssl/lab-ca.crt:ro
+    mem_limit: 64m
+    networks: [mon]
+
+  node-exporter:
+    <<: *hardening
+    image: prom/node-exporter:v1.9.1
+    user: "65534:65534"
+    read_only: true
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --collector.textfile.directory=/textfile
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+)($|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+      - textfile:/textfile:ro
+    pid: host
+    mem_limit: 64m
+    networks: [mon]
+
+  alert-sink:
+    # Stand-in for Telegram/e-mail: logs every Alertmanager notification so
+    # verify.sh can prove alerts are delivered end to end.
+    <<: *hardening
+    image: python:3.13-alpine
+    user: "65534:65534"
+    read_only: true
+    command: ["python", "-u", "/sink.py"]
+    volumes:
+      - ./alert-sink/sink.py:/sink.py:ro
+    mem_limit: 64m
+    networks: [mon]
+
+  # ---------------------------------------------------------------- logging
+  loki:
+    <<: *hardening
+    image: grafana/loki:3.5.3
+    user: "10001:10001"
+    read_only: true
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - ./loki/rules:/etc/loki/rules:ro
+      - loki_data:/loki
+    tmpfs: [/tmp]
+    mem_limit: 512m
+    networks: [mon]
+
+  docker-socket-proxy:
+    # Alloy needs the Docker API to read container logs. It never gets the raw
+    # socket: this proxy only allows read-only GET on /containers, /networks,
+    # /events, /version and /info. POST, exec, images and volumes are refused.
+    image: tecnativa/docker-socket-proxy:v0.4.1
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/run, /tmp, /var/lib/haproxy]
+    environment:
+      CONTAINERS: 1
+      EVENTS: 1
+      INFO: 1
+      VERSION: 1
+      DISABLE_IPV6: 1
+      POST: 0
+      IMAGES: 0
+      NETWORKS: 1
+      VOLUMES: 0
+      EXEC: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 64m
+    networks: [dockerapi]
+
+  alloy:
+    <<: *hardening
+    image: grafana/alloy:v1.10.0
+    user: "473:473"
+    read_only: true
+    command: ["run", "--storage.path=/var/lib/alloy/data", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
+    tmpfs: [/tmp]
+    mem_limit: 256m
+    networks: [mon, dockerapi]
+
+  grafana:
+    <<: *hardening
+    image: grafana/grafana:12.1.0
+    user: "472:0"
+    read_only: true
+    environment:
+      GF_SERVER_ROOT_URL: https://grafana.lab.test/
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_LOGIN_MAXIMUM_INACTIVE_LIFETIME_DURATION: 1h
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    secrets: [grafana_admin_password]
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana-dashboards:ro
+      - grafana_data:/var/lib/grafana
+    tmpfs: [/tmp]
+    mem_limit: 256m
+    networks: [mon]
+
+secrets:
+  postgres_password: { file: ./secrets/postgres_password }
+  restic_password: { file: ./secrets/restic_password }
+  grafana_admin_password: { file: ./secrets/grafana_admin_password }
+
+volumes:
+  caddy_data:
+  caddy_config:
+  pgdata:
+  backup_repo:
+  textfile:
+  prometheus_data:
+  alertmanager_data:
+  loki_data:
+  alloy_data:
+  grafana_data:
+
+networks:
+  edge:
+    ipam: { config: [{ subnet: 172.28.10.0/24 }] }
+  app:
+    internal: true
+    ipam: { config: [{ subnet: 172.28.20.0/24 }] }
+  db:
+    internal: true
+    ipam: { config: [{ subnet: 172.28.30.0/24 }] }
+  mon:
+    internal: true
+    ipam: { config: [{ subnet: 172.28.40.0/24 }] }
+  dockerapi:
+    internal: true
+    ipam: { config: [{ subnet: 172.28.50.0/24 }] }

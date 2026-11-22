@@ -1,0 +1,154 @@
+[
+  {
+    "target": "https://crm.lab.test:443/health",
+    "error": null,
+    "grade": "A",
+    "score": 92,
+    "status": 200,
+    "final_url": "https://crm.lab.test/health",
+    "findings": [
+      {
+        "id": "TLS-LEGACY",
+        "category": "TLS",
+        "status": "PASS",
+        "severity": "high",
+        "title": "TLS 1.0 and 1.1 refused",
+        "detail": "",
+        "fix": ""
+      },
+      {
+        "id": "TLS-13",
+        "category": "TLS",
+        "status": "PASS",
+        "severity": "low",
+        "title": "TLS 1.3 supported",
+        "detail": "",
+        "fix": ""
+      },
+      {
+        "id": "TLS-CIPHER",
+        "category": "TLS",
+        "status": "PASS",
+        "severity": "medium",
+        "title": "Strong cipher negotiated",
+        "detail": "TLS_AES_128_GCM_SHA256 (TLSv1.3, 128 bit)",
+        "fix": ""
+      },
+      {
+        "id": "CERT-VALID",
+        "category": "Certificate",
+        "status": "PASS",
+        "severity": "high",
+        "title": "Certificate chain and hostname valid",
+        "detail": "",
+        "fix": ""
+      },
+      {
+        "id": "CERT-INFO",
+        "category": "Certificate",
+        "status": "INFO",
+        "severity": "info",
+        "title": "Certificate details",
+        "detail": "subject CN=-, issuer=ISM Lab CA - ECC Intermediate, SAN=crm.lab.test",
+        "fix": ""
+      },
+      {
+        "id": "CERT-EXPIRY",
+        "category": "Certificate",
+        "status": "WARN",
+        "severity": "high",
+        "title": "Certificate expires soon",
+        "detail": "expires 2026-11-22 (0 days)",
+        "fix": "Renew it. Check that automatic renewal works."
+      },
+      {
+        "id": "HDR-HSTS",
+        "category": "Headers",
+        "status": "PASS",
+        "severity": "high",
+        "title": "HSTS enabled",
+        "detail": "max-age=31536000; includeSubDomains",
+        "fix": ""
+      },
+      {
+        "id": "HDR-CSP",
+        "category": "Headers",
+        "status": "PASS",
+        "severity": "medium",
+        "title": "Content-Security-Policy set",
+        "detail": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        "fix": ""
+      },
+      {
+        "id": "HDR-XCTO",
+        "category": "Headers",
+        "status": "PASS",
+        "severity": "medium",
+        "title": "X-Content-Type-Options: nosniff",
+        "detail": "",
+        "fix": ""
+      },
+      {
+        "id": "HDR-FRAME",
+        "category": "Headers",
+        "status": "PASS",
+        "severity": "medium",
+        "title": "Clickjacking protection (CSP frame-ancestors)",
+        "detail": "",
+        "fix": ""
+      },
+      {
+        "id": "HDR-REF",
+        "category": "Headers",
+        "status": "PASS",
+        "severity": "low",
+        "title": "Referrer-Policy set",
+        "detail": "no-referrer",
+        "fix": ""
+      },
+      {
+        "id": "HDR-PERM",
+        "category": "Headers",
+        "status": "PASS",
+        "severity": "low",
+        "title": "Permissions-Policy set",
+        "detail": "camera=(), microphone=(), geolocation=(), payment=()",
+        "fix": ""
+      },
+      {
+        "id": "INFO-SERVER",
+        "category": "Disclosure",
+        "status": "PASS",
+        "severity": "low",
+        "title": "No software versions disclosed",
+        "detail": "",
+        "fix": ""
+      },
+      {
+        "id": "REDIR-HTTPS",
+        "category": "Redirect",
+        "status": "PASS",
+        "severity": "medium",
+        "title": "HTTP redirects to HTTPS",
+        "detail": "308 -> https://crm.lab.test/health",
+        "fix": ""
+      }
+    ],
+    "headers": {
+      "Cache-Control": "no-store",
+      "Content-Length": "15",
+      "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      "Content-Type": "application/json",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "Date": "Sun, 22 Nov 2026 07:21:43 GMT",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+      "Referrer-Policy": "no-referrer",
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+      "Via": "1.1 Caddy",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "X-Request-Id": "138c3f284078544a"
+    }
+  }
+]

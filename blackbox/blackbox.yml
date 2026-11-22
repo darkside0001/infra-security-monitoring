@@ -1,0 +1,30 @@
+modules:
+  https_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: [200]
+      fail_if_not_ssl: true
+      preferred_ip_protocol: ip4
+      tls_config:
+        ca_file: /etc/ssl/lab-ca.crt
+        min_version: TLS12
+      fail_if_header_not_matches:
+        - header: Strict-Transport-Security
+          regexp: "max-age=31536000"
+      fail_if_header_matches:
+        # The proxy strips the Server header; fail if a version banner comes back.
+        - header: Server
+          regexp: ".+"
+          allow_missing: true
+
+  http_redirects_to_https:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: [301, 302, 307, 308]
+      no_follow_redirects: true
+      preferred_ip_protocol: ip4
+      fail_if_header_not_matches:
+        - header: Location
+          regexp: "^https://"

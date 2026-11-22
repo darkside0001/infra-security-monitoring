@@ -1,0 +1,64 @@
+// Grafana Alloy: ships every container's stdout/stderr to Loki.
+// It talks to a read-only Docker API proxy, never to the raw socket.
+
+discovery.docker "containers" {
+  host             = "tcp://docker-socket-proxy:2375"
+  refresh_interval = "10s"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=ism"]
+  }
+}
+
+discovery.relabel "containers" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "tcp://docker-socket-proxy:2375"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.containers.rules
+  forward_to    = [loki.process.default.receiver]
+}
+
+loki.process "default" {
+  // Caddy access logs are JSON: promote the status class to a label so
+  // dashboards can filter 4xx/5xx cheaply. Client IP stays in the line
+  // (high cardinality does not belong in labels).
+  stage.match {
+    selector = "{service=\"caddy\"}"
+
+    stage.json {
+      expressions = { status = "status", logger = "logger" }
+    }
+
+    stage.template {
+      source   = "status_class"
+      template = "{{ if .status }}{{ printf \"%.1s\" .status }}xx{{ end }}"
+    }
+
+    stage.labels {
+      values = { status_class = "" }
+    }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

@@ -1,0 +1,99 @@
+# Caddy: the only service reachable from outside the host.
+# Lab uses an internal CA (`tls internal`). On a real server, delete the
+# `import tls_lab` lines and Caddy gets Let's Encrypt certificates instead.
+{
+	admin localhost:2019
+	skip_install_trust
+	pki {
+		ca local {
+			name "ISM Lab CA"
+			root {
+				cert /etc/caddy/lab-ca/root.crt
+				key /etc/caddy/lab-ca/root.key
+			}
+		}
+	}
+	metrics {
+		per_host
+	}
+	servers {
+		# Clients get a 408 instead of holding a connection forever (slowloris).
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 2m
+		}
+		protocols h1 h2
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		-Server
+		-X-Powered-By
+	}
+}
+
+(tls_lab) {
+	tls internal {
+		protocols tls1.2 tls1.3
+	}
+}
+
+(access_log) {
+	log {
+		output stdout
+		format json
+	}
+}
+
+crm.lab.test {
+	import tls_lab
+	import security_headers
+	import access_log
+
+	request_body {
+		max_size 1MB
+	}
+
+	# API explorer and schema stay private even if the app is started in dev mode.
+	@private path /docs /docs/* /redoc /openapi.json
+	respond @private 404
+
+	reverse_proxy crm-api:8000 {
+		# Overwrite, never append: a client cannot smuggle a fake address into
+		# the rate limiter or the audit log through its own X-Forwarded-For.
+		header_up X-Forwarded-For {remote_host}
+		health_uri /health
+		health_interval 10s
+		health_timeout 3s
+	}
+}
+
+grafana.lab.test {
+	import tls_lab
+	import security_headers
+	import access_log
+
+	# Admin UI: private networks only (in production: the WireGuard subnet).
+	@outside not remote_ip private_ranges
+	respond @outside 403
+
+	reverse_proxy grafana:3000
+}
+
+# Prometheus scrape endpoint: bound to the monitoring network address only, so
+# it is not even listening on the edge network. The remote_ip check is a second
+# layer in case the bind address is ever changed.
+http://:2020 {
+	bind 172.28.40.10
+	@not_monitoring not remote_ip 172.28.40.0/24
+	respond @not_monitoring 403
+	metrics /metrics
+}

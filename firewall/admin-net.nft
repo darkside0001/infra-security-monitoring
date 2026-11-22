@@ -1,0 +1,2 @@
+# Addresses allowed to reach SSH. Replace with your WireGuard subnet.
+define ADMIN_NET = { 10.8.0.0/24 }
